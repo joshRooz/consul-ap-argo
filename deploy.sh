@@ -18,6 +18,7 @@ helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
 helm repo update metrics-server
 helm install metrics-server metrics-server/metrics-server --namespace kube-system --set args={--kubelet-insecure-tls}
 
+
 # BEGIN: deploy and configure argo cd
 kubectl create ns argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
@@ -41,12 +42,8 @@ argocd account update-password \
 
 kubectl delete secret -n argocd argocd-initial-admin-secret
 
-# BEGIN: add management cluster
-# performed automatically for in-cluster
-#argocd cluster add kind-management --in-cluster --yes # this performed automatically for in-cluster
 
 # BEGIN: create an argo project - aka AppProj CRD
-#####--source-namespaces consul \
 argocd proj create consul \
 --description "HashiCorp Consul" \
 --src https://helm.releases.hashicorp.com \
@@ -116,7 +113,7 @@ until [[ $(kubectl --context kind-management get -n consul ep consul-ui  -ojson 
 nohup kubectl --context kind-management port-forward svc/consul-ui -n consul 8501:443 &>/tmp/consul-ui.out & disown
 
 #-------------------------------------------------
-# BEGIN: deploying other cluster(s)
+# BEGIN: deploy other cluster(s)
 for entity in foo bar baz ; do
 
   kind create cluster --name="$entity" --config=- <<-EOY
@@ -160,7 +157,6 @@ for entity in foo bar baz ; do
   # BEGIN: consul admin partition secrets
   # see secrets management note above
   kubectl create namespace consul --context "kind-$entity"
-  #kubectl create secret generic consul-license --context kind-argocd-target --namespace consul  --from-file=consul.hclic=license/consul.hclic # is this actually required?
   kubectl get secret --context kind-management --namespace consul  consul-ca-cert -ojson | jq -r '.data."tls.crt"' | base64 -d -o tls.crt
   kubectl create secret generic consul-ca-cert --context "kind-$entity" --namespace consul --from-file="tls.crt=tls.crt" # decode/reencode. ugh.
   rm tls.crt
@@ -170,70 +166,6 @@ for entity in foo bar baz ; do
   kubectl get secret --context kind-management --namespace consul  consul-bootstrap-acl-token -ojson | jq -r .data.token | base64 -d |
     xargs -I {} kubectl create secret generic consul-partition-acl-token --context "kind-$entity" --namespace consul --from-literal="token={}" # decode/reencode. ugh.
 done
-
-#kubectl apply --context kind-management --namespace argocd -f - <<EOF
-#apiVersion: argoproj.io/v1alpha1
-#kind: Application
-#metadata:
-#  name: consul-ap
-#  finalizers:
-#    - resources-finalizer.argocd.argoproj.io  # foreground cascading deletion
-#spec:
-#  project: consul
-#  source:
-#    repoURL: https://helm.releases.hashicorp.com
-#    targetRevision: 1.2.1
-#    chart: consul
-#    helm:
-#      values: |
-#        global:
-#          enabled: false
-#          logLevel: debug
-#          name: consul
-#          adminPartitions:
-#            enabled: true
-#            name: foo
-#          image: hashicorp/consul-enterprise:1.16.1-ent
-#          tls:
-#            enabled: true
-#            caCert:
-#              secretName: consul-ca-cert
-#              secretKey: tls.crt
-#          enableConsulNamespaces: true
-#          acls:
-#            manageSystemACLs: true
-#            bootstrapToken:
-#              secretName: consul-partition-acl-token
-#              secretKey: token
-#            annotations: |
-#              argocd.argoproj.io/hook: Sync
-#              argocd.argoproj.io/hook-delete-policy: HookSucceeded
-#        externalServers:
-#          enabled: true
-#          hosts:
-#            - management-worker3
-#          httpsPort: 32767
-#          grpcPort: 32766
-#          tlsServerName: server.dc1.consul
-#          k8sAuthMethodHost: https://argocd-target-control-plane:6443
-#        connectInject:
-#          apiGateway:
-#            managedGatewayClass:
-#              serviceType: ClusterIP
-#          default: true
-#        meshGateway:
-#          enabled: true
-#          service:
-#            type: ClusterIP
-#
-#  destination:
-#    name: argocd-target
-#    namespace: consul
-#
-#  syncPolicy:
-#    syncOptions:
-#      - CreateNamespace=true
-#EOF
 
 kubectl apply --context kind-management --namespace argocd -f - <<EOF
 apiVersion: argoproj.io/v1alpha1
@@ -304,14 +236,3 @@ spec:
         syncOptions:
           - CreateNamespace=true
 EOF
-
-# deploy the demo app to the project aka App CRD
-#argocd app create guestbook \
-#--repo https://github.com/argoproj/argocd-example-apps.git \
-#--path guestbook \
-#--sync-policy automated \
-#--sync-option CreateNamespace=true \
-#--self-heal \
-#--auto-prune \
-#--dest-server https://kubernetes.default.svc \
-#--dest-namespace guestbook
